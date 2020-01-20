@@ -180,8 +180,8 @@ class LocalFileOpener(object):
                 # TODO: check if path is writable?
                 i, name = tempfile.mkstemp()
                 self.temp = name
-                print('open', name)
                 self.f = open(name, mode=self.mode)
+                print('open', name, id(f))
             if "w" not in self.mode:
                 self.details = self.fs.info(self.path)
                 self.size = self.details["size"]
@@ -214,10 +214,6 @@ class LocalFileOpener(object):
                 raise ValueError("Cannot serialise open write-mode local file")
         return d
 
-    def close(self):
-        import pdb
-        pdb.set_trace()
-
     def commit(self):
         if self.autocommit:
             raise RuntimeError("Can only commit if not already set to autocommit")
@@ -230,6 +226,7 @@ class LocalFileOpener(object):
         if self.autocommit:
             raise RuntimeError("Cannot discard if set to autocommit")
         self.f.close()
+        import pdb; pdb.set_trace()
         os.remove(self.temp)
 
     def __fspath__(self):
