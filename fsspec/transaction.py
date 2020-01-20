@@ -28,6 +28,7 @@ class Transaction(object):
     def start(self):
         """Start a transaction on this FileSystem"""
         self.fs._intrans = True
+        self.files = []
 
     def complete(self, commit=True):
         """Finish transaction: commit or discard all deferred files"""
