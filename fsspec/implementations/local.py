@@ -92,7 +92,7 @@ class LocalFileSystem(AbstractFileSystem):
             return self.copy(path1, path2, **kwargs)
 
     def mv(self, path1, path2, **kwargs):
-        os.rename(path1, path2)
+        shutil.move(path1, path2)
 
     def rm(self, path, recursive=False, maxdepth=None):
         if recursive and self.isdir(path):
@@ -180,6 +180,7 @@ class LocalFileOpener(object):
                 # TODO: check if path is writable?
                 i, name = tempfile.mkstemp()
                 self.temp = name
+                print('open', name)
                 self.f = open(name, mode=self.mode)
             if "w" not in self.mode:
                 self.details = self.fs.info(self.path)
@@ -213,10 +214,14 @@ class LocalFileOpener(object):
                 raise ValueError("Cannot serialise open write-mode local file")
         return d
 
+    def close(self):
+        import pdb
+        pdb.set_trace()
+
     def commit(self):
         if self.autocommit:
             raise RuntimeError("Can only commit if not already set to autocommit")
-        self.f.__exit__(None)
+        self.f.close()
         if os.path.exists(self.path):
             os.unlink(self.path)
         os.rename(self.temp, self.path)
@@ -224,7 +229,7 @@ class LocalFileOpener(object):
     def discard(self):
         if self.autocommit:
             raise RuntimeError("Cannot discard if set to autocommit")
-        self.f.__exit__(None)
+        self.f.close()
         os.remove(self.temp)
 
     def __fspath__(self):
