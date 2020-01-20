@@ -216,6 +216,8 @@ class LocalFileOpener(object):
     def commit(self):
         if self.autocommit:
             raise RuntimeError("Can only commit if not already set to autocommit")
+        if os.path.exists(self.path):
+            os.unlink(self.path)
         os.rename(self.temp, self.path)
 
     def discard(self):
