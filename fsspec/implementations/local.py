@@ -220,14 +220,13 @@ class LocalFileOpener(object):
         self.f.close()
         if os.path.exists(self.path):
             os.unlink(self.path)
-        os.rename(self.temp, self.path)
+        shutil.move(self.temp, self.path)
 
     def discard(self):
         if self.autocommit:
             raise RuntimeError("Cannot discard if set to autocommit")
         self.f.close()
-        import pdb; pdb.set_trace()
-        os.remove(self.temp)
+        shutil.rmtree(self.temp, ignore_errors=True)
 
     def __fspath__(self):
         # uniquely for fsspec implementations, this is a real path
