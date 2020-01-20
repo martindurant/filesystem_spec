@@ -181,7 +181,7 @@ class LocalFileOpener(object):
                 i, name = tempfile.mkstemp()
                 self.temp = name
                 self.f = open(name, mode=self.mode)
-                print('open', name, id(f))
+                print('open', name, id(self.f))
             if "w" not in self.mode:
                 self.details = self.fs.info(self.path)
                 self.size = self.details["size"]
