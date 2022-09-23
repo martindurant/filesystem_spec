@@ -73,7 +73,7 @@ class ReferenceFileSystem(AsyncFileSystem):
         target_options=None,
         remote_protocol=None,
         remote_options=None,
-        fs=None,
+        fss=None,
         template_overrides=None,
         simple_templates=True,
         loop=None,
@@ -147,20 +147,20 @@ class ReferenceFileSystem(AsyncFileSystem):
             self._process_dataframe()
         else:
             self._process_references(text, template_overrides)
-        if isinstance(fs, dict):
+        if isinstance(fss, dict):
             self.fss = {
                 k: (
                     fsspec.filesystem(k.split(":", 1)[0], **opts)
                     if isinstance(opts, dict)
                     else opts
                 )
-                for k, opts in fs.items()
+                for k, opts in fss.items()
             }
             return
-        if fs is not None:
+        if fss is not None:
             # single remote FS
             remote_protocol = (
-                fs.protocol[0] if isinstance(fs.protocol, tuple) else fs.protocol
+                fss.protocol[0] if isinstance(fss.protocol, tuple) else fss.protocol
             )
 
         if remote_protocol is None:
@@ -185,7 +185,7 @@ class ReferenceFileSystem(AsyncFileSystem):
         if remote_protocol is None:
             remote_protocol = target_protocol
 
-        fs = fs or filesystem(remote_protocol, loop=loop, **(remote_options or {}))
+        fs = fss or filesystem(remote_protocol, loop=loop, **(remote_options or {}))
         self.fss[remote_protocol] = fs
         self.fss[None] = fs  # default one
 
@@ -238,10 +238,6 @@ class ReferenceFileSystem(AsyncFileSystem):
         return self.fss[protocol].cat_file(part_or_url, start=start0, end=end0)[
             start:end
         ]
-
-    def pipe_file(self, path, value, **_):
-        """Temporarily add binary data or reference as a file"""
-        self.references[path] = value
 
     async def _get_file(self, rpath, lpath, **kwargs):
         if self.isdir(rpath):
@@ -558,21 +554,34 @@ class ReferenceFileSystem(AsyncFileSystem):
         self.references.pop(
             path, None
         )  # ignores FileNotFound, just as well for directories
-        self.dircache.clear()  # this is a bit heavy handed
+        self.dircache.clear()
 
-    async def _pipe_file(self, path, data):
-        # can be str or bytes
-        self.references[path] = data
-        self.dircache.clear()  # this is a bit heavy handed
+    async def _pipe_file(self, path, value, url_prefix="file:///tmp/zarr_files",
+                         inline_threshold=500,
+                         **_):
+        """Temporarily add binary data or reference as a file"""
+        if len(value) < inline_threshold:
+            self.references[path] = value
+        else:
+            import uuid
+            u = uuid.uuid4()
+            fn = f"{url_prefix}/{u}"
+            with open(fn, "wb") as f:
+                f.write(value)
+            self.references[path] = [fn]
+            if "file" not in self.fss:
+                self.fss["file"] = fsspec.filesystem("file")
+        self.dircache.clear()
 
     async def _put_file(self, lpath, rpath):
         # puts binary
         with open(lpath, "rb") as f:
             self.references[rpath] = f.read()
-        self.dircache.clear()  # this is a bit heavy handed
+        self.dircache.clear()
 
     def save_json(self, url, **storage_options):
         """Write modified references into new location"""
+        import ujson
         out = {}
         for k, v in self.references.items():
             if isinstance(v, bytes):
@@ -583,7 +592,7 @@ class ReferenceFileSystem(AsyncFileSystem):
             else:
                 out[k] = v
         with fsspec.open(url, "wb", **storage_options) as f:
-            f.write(json.dumps({"version": 1, "refs": out}).encode())
+            f.write(ujson.dumps({"version": 1, "refs": out}).encode())
 
 
 def _unmodel_hdf5(references):
