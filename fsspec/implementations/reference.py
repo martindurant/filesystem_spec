@@ -3,6 +3,7 @@ import io
 import itertools
 import logging
 import os
+import tempfile
 from functools import lru_cache
 
 import fsspec.core
@@ -89,6 +90,7 @@ class ReferenceFileSystem(AsyncFileSystem):
         max_gap=64_000,
         max_block=256_000_000,
         loop=None,
+        write_url=None,
         **kwargs,
     ):
         """
@@ -149,6 +151,7 @@ class ReferenceFileSystem(AsyncFileSystem):
         self.templates = {}
         self.fss = {}
         self._dircache = {}
+        self.write_url = write_url or tempfile.mkdtemp()
         self.max_gap = max_gap
         self.max_block = max_block
         if hasattr(fo, "read"):
@@ -177,10 +180,8 @@ class ReferenceFileSystem(AsyncFileSystem):
                 )
                 for k, opts in fss.items()
             }
-            if None not in self.fss:
-                self.fss[None] = filesystem("file")
-            return
-        if fss is not None:
+            remote_protocol = iter(self.fss).__next__()
+        elif fss is not None:
             # single remote FS
             remote_protocol = (
                 fss.protocol[0] if isinstance(fss.protocol, tuple) else fss.protocol
@@ -593,30 +594,32 @@ class ReferenceFileSystem(AsyncFileSystem):
         self,
         path,
         value,
-        url_prefix="file:///tmp/zarr_files",
         inline_threshold=500,
         **_,
     ):
         """Temporarily add binary data or reference as a file"""
         if len(value) < inline_threshold:
             self.references[path] = value
-        else:
+        elif self.write_url:
             import uuid
 
             u = uuid.uuid4()
-            fn = f"{url_prefix}/{u}"
+            fn = f"{self.write_url}/{u}"
             with open(fn, "wb") as f:
                 f.write(value)
-            self.references[path] = [fn]
+            self.references[path] = ["file://" + fn]
             if "file" not in self.fss:
                 self.fss["file"] = fsspec.filesystem("file")
+        else:
+            raise ValueError(
+                "No write URL specified for this instance, and"
+                "size is above inline threshold"
+            )
         self.dircache.clear()
 
     async def _put_file(self, lpath, rpath):
         # puts binary
-        with open(lpath, "rb") as f:
-            self.references[rpath] = f.read()
-        self.dircache.clear()
+        await self._pipe_file(rpath, open(lpath, "rb").read())
 
     def save_json(self, url, **storage_options):
         """Write modified references into new location"""
