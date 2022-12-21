@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import inspect
 import logging
@@ -5,7 +6,7 @@ import os
 import pickle
 import tempfile
 import time
-from shutil import move, rmtree
+from shutil import rmtree
 
 from fsspec import AbstractFileSystem, filesystem
 from fsspec.callbacks import _DEFAULT_CALLBACK
@@ -15,7 +16,7 @@ from fsspec.exceptions import BlocksizeMismatchError
 from fsspec.spec import AbstractBufferedFile
 from fsspec.utils import infer_compression
 
-logger = logging.getLogger("fsspec")
+logger = logging.getLogger("fsspec.cached")
 
 
 class CachingFileSystem(AbstractFileSystem):
@@ -23,7 +24,7 @@ class CachingFileSystem(AbstractFileSystem):
 
     This class implements chunk-wise local storage of remote files, for quick
     access after the initial download. The files are stored in a given
-    directory with random hashes for the filenames. If no directory is given,
+    directory with hashes of URLs for the filenames. If no directory is given,
     a temporary one is used, which should be cleaned up by the OS after the
     process ends. The files themselves are sparse (as implemented in
     :class:`~fsspec.caching.MMapCache`), so only the data which is accessed
@@ -184,11 +185,9 @@ class CachingFileSystem(AbstractFileSystem):
         for c in cache.values():
             if isinstance(c["blocks"], set):
                 c["blocks"] = list(c["blocks"])
-        fd2, fn2 = tempfile.mkstemp()
-        with open(fd2, "wb") as f:
-            pickle.dump(cache, f)
         self._mkcache()
-        move(fn2, fn)
+        with atomic_write(fn) as f:
+            pickle.dump(cache, f)
         self.cached_files[-1] = cached_files
         self.last_cache = time.time()
 
@@ -231,6 +230,44 @@ class CachingFileSystem(AbstractFileSystem):
         """
         rmtree(self.storage[-1])
         self.load_cache()
+
+    def clear_expired_cache(self, expiry_time=None):
+        """Remove all expired files and metadata from the cache
+
+        In the case of multiple cache locations, this clears only the last one,
+        which is assumed to be the read/write one.
+
+        Parameters
+        ----------
+        expiry_time: int
+            The time in seconds after which a local copy is considered useless.
+            If not defined the default is equivalent to the attribute from the
+            file caching instantiation.
+        """
+
+        if not expiry_time:
+            expiry_time = self.expiry
+
+        self._check_cache()
+
+        for path, detail in self.cached_files[-1].copy().items():
+            if time.time() - detail["time"] > expiry_time:
+                if self.same_names:
+                    basename = os.path.basename(detail["original"])
+                    fn = os.path.join(self.storage[-1], basename)
+                else:
+                    fn = os.path.join(self.storage[-1], detail["fn"])
+                if os.path.exists(fn):
+                    os.remove(fn)
+                    self.cached_files[-1].pop(path)
+
+        if self.cached_files[-1]:
+            cache_path = os.path.join(self.storage[-1], "cache")
+            with atomic_write(cache_path) as fc:
+                pickle.dump(self.cached_files[-1], fc)
+        else:
+            rmtree(self.storage[-1])
+            self.load_cache()
 
     def pop_from_cache(self, path):
         """Remove cached version of given file
@@ -389,6 +426,7 @@ class CachingFileSystem(AbstractFileSystem):
             "_check_cache",
             "_mkcache",
             "clear_cache",
+            "clear_expired_cache",
             "pop_from_cache",
             "_mkcache",
             "local_file",
@@ -795,3 +833,24 @@ def hash_name(path, same_name):
     else:
         hash = hashlib.sha256(path.encode()).hexdigest()
     return hash
+
+
+@contextlib.contextmanager
+def atomic_write(path, mode="wb"):
+    """
+    A context manager that opens a temporary file next to `path` and, on exit,
+    replaces `path` with the temporary file, thereby updating `path`
+    atomically.
+    """
+    fd, fn = tempfile.mkstemp(
+        dir=os.path.dirname(path), prefix=os.path.basename(path) + "-"
+    )
+    try:
+        with open(fd, mode) as fp:
+            yield fp
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(fn)
+        raise
+    else:
+        os.replace(fn, path)

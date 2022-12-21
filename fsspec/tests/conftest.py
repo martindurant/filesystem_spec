@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 import threading
 from collections import ChainMap
@@ -9,7 +10,7 @@ import pytest
 requests = pytest.importorskip("requests")
 port = 9898
 data = b"\n".join([b"some test data"] * 1000)
-realfile = "http://localhost:%i/index/realfile" % port
+realfile = "http://127.0.0.1:%i/index/realfile" % port
 index = b'<a href="%s">Link</a>' % realfile.encode()
 listing = open(
     os.path.join(os.path.dirname(__file__), "data", "listing.html"), "rb"
@@ -53,6 +54,8 @@ class HTTPTestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         file_path = self.path.rstrip("/")
         file_data = self.files.get(file_path)
+        if "give_path" in self.headers:
+            return self._respond(200, data=json.dumps({"path": self.path}).encode())
         if file_data is None:
             return self._respond(404)
         if "Range" in self.headers:
@@ -136,7 +139,7 @@ def serve():
     th.daemon = True
     th.start()
     try:
-        yield "http://localhost:%i" % port
+        yield "http://127.0.0.1:%i" % port
     finally:
         httpd.socket.close()
         httpd.shutdown()

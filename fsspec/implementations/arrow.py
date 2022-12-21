@@ -4,10 +4,10 @@ import os
 import secrets
 import shutil
 from contextlib import suppress
-from functools import wraps
+from functools import cached_property, wraps
 
 from fsspec.spec import AbstractFileSystem
-from fsspec.utils import infer_storage_options, mirror_from, stringify_path
+from fsspec.utils import infer_storage_options, mirror_from, tokenize
 
 
 def wrap_exceptions(func):
@@ -50,15 +50,21 @@ class ArrowFSWrapper(AbstractFileSystem):
         self.fs = fs
         super().__init__(**kwargs)
 
+    @cached_property
+    def fsid(self):
+        return "hdfs_" + tokenize(self.fs.host, self.fs.port)
+
     @classmethod
     def _strip_protocol(cls, path):
-        path = stringify_path(path)
-        if "://" in path:
-            _, _, path = path.partition("://")
-
+        ops = infer_storage_options(path)
+        path = ops["path"]
+        if path.startswith("//"):
+            # special case for "hdfs://path" (without the triple slash)
+            path = path[1:]
         return path
 
     def ls(self, path, detail=False, **kwargs):
+        path = self._strip_protocol(path)
         from pyarrow.fs import FileSelector
 
         entries = [
@@ -109,7 +115,7 @@ class ArrowFSWrapper(AbstractFileSystem):
         path2 = self._strip_protocol(path2).rstrip("/")
 
         with self._open(path1, "rb") as lstream:
-            tmp_fname = "/".join([self._parent(path2), f".tmp.{secrets.token_hex(16)}"])
+            tmp_fname = f"{path2}.tmp.{secrets.token_hex(6)}"
             try:
                 with self.open(tmp_fname, "wb") as rstream:
                     shutil.copyfileobj(lstream, rstream)
@@ -144,18 +150,24 @@ class ArrowFSWrapper(AbstractFileSystem):
             self.fs.delete_file(path)
 
     @wrap_exceptions
-    def _open(self, path, mode="rb", block_size=None, **kwargs):
+    def _open(self, path, mode="rb", block_size=None, seekable=False, **kwargs):
         if mode == "rb":
-            method = self.fs.open_input_stream
+            if seekable:
+                method = self.fs.open_input_file
+            else:
+                method = self.fs.open_input_stream
         elif mode == "wb":
             method = self.fs.open_output_stream
+        elif mode == "ab":
+            method = self.fs.open_append_stream
         else:
             raise ValueError(f"unsupported mode for Arrow filesystem: {mode!r}")
 
         _kwargs = {}
-        if PYARROW_VERSION[0] >= 4:
-            # disable compression auto-detection
-            _kwargs["compression"] = None
+        if mode != "rb" or not seekable:
+            if PYARROW_VERSION[0] >= 4:
+                # disable compression auto-detection
+                _kwargs["compression"] = None
         stream = method(path, **_kwargs)
 
         return ArrowFile(self, stream, path, mode, block_size, **kwargs)
@@ -178,9 +190,14 @@ class ArrowFSWrapper(AbstractFileSystem):
         path = self._strip_protocol(path)
         self.fs.delete_dir(path)
 
+    @wrap_exceptions
+    def modified(self, path):
+        path = self._strip_protocol(path)
+        return self.fs.get_file_info(path).mtime
+
 
 @mirror_from(
-    "stream", ["read", "seek", "tell", "write", "readable", "writable", "close"]
+    "stream", ["read", "seek", "tell", "write", "readable", "writable", "close", "size"]
 )
 class ArrowFile(io.IOBase):
     def __init__(self, fs, stream, path, mode, block_size=None, **kwargs):

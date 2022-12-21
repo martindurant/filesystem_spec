@@ -46,7 +46,6 @@ Base Classes
    fsspec.core.get_fs_token_paths
    fsspec.core.url_to_fs
    fsspec.dircache.DirCache
-   fsspec.registry.ReadOnlyRegistry
    fsspec.registry.register_implementation
    fsspec.callbacks.Callback
    fsspec.callbacks.NoOpCallback
@@ -82,9 +81,6 @@ Base Classes
 .. autofunction:: fsspec.core.url_to_fs
 
 .. autoclass:: fsspec.dircache.DirCache
-   :members: __init__
-
-.. autoclass:: fsspec.registry.ReadOnlyRegistry
    :members: __init__
 
 .. autofunction:: fsspec.registry.register_implementation
@@ -130,6 +126,7 @@ Built-in Implementations
    fsspec.implementations.dbfs.DatabricksFileSystem
    fsspec.implementations.reference.ReferenceFileSystem
    fsspec.implementations.dirfs.DirFileSystem
+   fsspec.implementations.tar.TarFileSystem
 
 .. autoclass:: fsspec.implementations.ftp.FTPFileSystem
    :members: __init__
@@ -194,6 +191,9 @@ Built-in Implementations
 .. autoclass:: fsspec.implementations.dirfs.DirFileSystem
    :members: __init__
 
+.. autoclass:: fsspec.implementations.tar.TarFileSystem
+   :members: __init__
+
 Other Known Implementations
 ---------------------------
 
@@ -244,3 +244,12 @@ Read Buffering
 
 .. autoclass:: fsspec.caching.BlockCache
    :members:
+
+Utilities
+---------
+
+.. autosummary::
+
+   fsspec.utils.read_block
+
+.. autofunction:: fsspec.utils.read_block

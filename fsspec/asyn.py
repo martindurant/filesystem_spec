@@ -24,7 +24,7 @@ _lock = None  # global lock placeholder
 def get_lock():
     """Allocate or return a threading lock.
 
-    The lock is allocatted on first use to allow setting one lock per forked process.
+    The lock is allocated on first use to allow setting one lock per forked process.
     """
     global _lock
     if not _lock:
@@ -61,8 +61,10 @@ def sync(loop, func, *args, timeout=None, **kwargs):
     """
     Make loop run coroutine until it returns. Runs in other thread
 
-    Example usage:
-        fsspec.asyn.sync(fsspec.asyn.get_loop(), func, *args, timeout=timeout, **kwargs)
+    Examples
+    --------
+    >>> fsspec.asyn.sync(fsspec.asyn.get_loop(), func, *args,
+                         timeout=timeout, **kwargs)
     """
     timeout = timeout if timeout else None  # convert 0 or 0.0 to None
     # NB: if the loop is not running *yet*, it is OK to submit work
@@ -129,17 +131,6 @@ def _selector_policy():
         asyncio.set_event_loop_policy(original_policy)
 
 
-def get_running_loop():
-    if hasattr(asyncio, "get_running_loop"):
-        return asyncio.get_running_loop()
-    else:
-        loop = asyncio._get_running_loop()
-        if loop is None:
-            raise RuntimeError("no running event loop")
-        else:
-            return loop
-
-
 def get_loop():
     """Create or return the default fsspec IO loop
 
@@ -157,25 +148,6 @@ def get_loop():
                 th.start()
                 iothread[0] = th
     return loop[0]
-
-
-@contextmanager
-def fsspec_loop():
-    """Temporarily switch the current event loop to the fsspec's
-    own loop, and then revert it back after the context gets
-    terminated.
-    """
-    try:
-        original_loop = get_running_loop()
-    except RuntimeError:
-        original_loop = None
-
-    fsspec_loop = get_loop()
-    try:
-        asyncio._set_running_loop(fsspec_loop)
-        yield fsspec_loop
-    finally:
-        asyncio._set_running_loop(original_loop)
 
 
 try:
@@ -307,6 +279,7 @@ class AsyncFileSystem(AbstractFileSystem):
     # for _* methods and inferred for overridden methods.
 
     async_impl = True
+    mirror_sync_methods = True
     disable_throttling = False
 
     def __init__(self, *args, asynchronous=False, loop=None, batch_size=None, **kwargs):
@@ -438,7 +411,14 @@ class AsyncFileSystem(AbstractFileSystem):
             return out[0]
 
     async def _cat_ranges(
-        self, paths, starts, ends, max_gap=None, batch_size=None, **kwargs
+        self,
+        paths,
+        starts,
+        ends,
+        max_gap=None,
+        batch_size=None,
+        on_error="return",
+        **kwargs,
     ):
         # TODO: on_error
         if max_gap is not None:
@@ -457,7 +437,9 @@ class AsyncFileSystem(AbstractFileSystem):
             for p, s, e in zip(paths, starts, ends)
         ]
         batch_size = batch_size or self.batch_size
-        return await _run_coros_in_chunks(coros, batch_size=batch_size, nofiles=True)
+        return await _run_coros_in_chunks(
+            coros, batch_size=batch_size, nofiles=True, return_exceptions=True
+        )
 
     async def _put_file(self, lpath, rpath, **kwargs):
         raise NotImplementedError

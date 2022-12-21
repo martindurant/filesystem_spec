@@ -14,11 +14,11 @@ def fs():
     return ArrowFSWrapper(fs)
 
 
-@pytest.fixture(scope="function")
-def remote_dir(fs):
+@pytest.fixture(scope="function", params=[False, True])
+def remote_dir(fs, request):
     directory = secrets.token_hex(16)
     fs.makedirs(directory)
-    yield directory
+    yield ("hdfs://" if request.param else "/") + directory
     fs.rm(directory, recursive=True)
 
 
@@ -28,20 +28,28 @@ def strip_keys(original_entry):
     return entry
 
 
+def test_strip(fs):
+    assert fs._strip_protocol("/a/file") == "/a/file"
+    assert fs._strip_protocol("hdfs:///a/file") == "/a/file"
+    assert fs._strip_protocol("hdfs://1.1.1.1/a/file") == "/a/file"
+    assert fs._strip_protocol("hdfs://1.1.1.1:8888/a/file") == "/a/file"
+
+
 def test_info(fs, remote_dir):
     fs.touch(remote_dir + "/a.txt")
+    remote_dir_strip_protocol = fs._strip_protocol(remote_dir)
     details = fs.info(remote_dir + "/a.txt")
     assert details["type"] == "file"
-    assert details["name"] == remote_dir + "/a.txt"
+    assert details["name"] == remote_dir_strip_protocol + "/a.txt"
     assert details["size"] == 0
 
     fs.mkdir(remote_dir + "/dir")
     details = fs.info(remote_dir + "/dir")
     assert details["type"] == "directory"
-    assert details["name"] == remote_dir + "/dir"
+    assert details["name"] == remote_dir_strip_protocol + "/dir"
 
     details = fs.info(remote_dir + "/dir/")
-    assert details["name"] == remote_dir + "/dir/"
+    assert details["name"] == remote_dir_strip_protocol + "/dir/"
 
 
 def test_move(fs, remote_dir):
@@ -114,12 +122,16 @@ def test_rm(fs, remote_dir):
 
 
 def test_ls(fs, remote_dir):
+    if remote_dir != "/":
+        remote_dir = remote_dir + "/"
+    remote_dir_strip_protocol = fs._strip_protocol(remote_dir)
     fs.mkdir(remote_dir + "dir/")
     files = set()
     for no in range(8):
         file = remote_dir + f"dir/test_{no}"
+        # we also want to make sure `fs.touch` works with protocol
         fs.touch(file)
-        files.add(file)
+        files.add(remote_dir_strip_protocol + f"dir/test_{no}")
 
     assert set(fs.ls(remote_dir + "dir/")) == files
 
@@ -134,6 +146,8 @@ def test_ls(fs, remote_dir):
 
 
 def test_mkdir(fs, remote_dir):
+    if remote_dir != "/":
+        remote_dir = remote_dir + "/"
     fs.mkdir(remote_dir + "dir/")
     assert fs.isdir(remote_dir + "dir/")
     assert len(fs.ls(remote_dir + "dir/")) == 0
@@ -181,3 +195,27 @@ def test_open_rw_flush(fs, remote_dir):
 
     with fs.open(remote_dir + "/b.txt", "rb") as stream:
         assert stream.read() == data * 400
+
+
+def test_open_append(fs, remote_dir):
+    data = b"dvc.org"
+
+    with fs.open(remote_dir + "/a.txt", "wb") as stream:
+        stream.write(data)
+
+    with fs.open(remote_dir + "/a.txt", "ab") as stream:
+        stream.write(data)
+
+    with fs.open(remote_dir + "/a.txt") as stream:
+        assert stream.read() == 2 * data
+
+
+def test_open_seekable(fs, remote_dir):
+    data = b"dvc.org"
+
+    with fs.open(remote_dir + "/a.txt", "wb") as stream:
+        stream.write(data)
+
+    with fs.open(remote_dir + "/a.txt", "rb", seekable=True) as file:
+        file.seek(2)
+        assert file.read() == data[2:]

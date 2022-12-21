@@ -36,6 +36,10 @@ class LocalFileSystem(AbstractFileSystem):
         super().__init__(**kwargs)
         self.auto_mkdir = auto_mkdir
 
+    @property
+    def fsid(self):
+        return "local"
+
     def mkdir(self, path, create_parents=True, **kwargs):
         path = self._strip_protocol(path)
         if self.exists(path):
@@ -97,7 +101,7 @@ class LocalFileSystem(AbstractFileSystem):
             "created": out.st_ctime,
             "islink": link,
         }
-        for field in ["mode", "uid", "gid", "mtime"]:
+        for field in ["mode", "uid", "gid", "mtime", "ino", "nlink"]:
             result[field] = getattr(out, "st_" + field)
         if result["islink"]:
             result["destination"] = os.readlink(path)
@@ -138,11 +142,24 @@ class LocalFileSystem(AbstractFileSystem):
         path2 = self._strip_protocol(path2).rstrip("/")
         shutil.move(path1, path2)
 
+    def link(self, src, dst, **kwargs):
+        src = self._strip_protocol(src)
+        dst = self._strip_protocol(dst)
+        os.link(src, dst, **kwargs)
+
+    def symlink(self, src, dst, **kwargs):
+        src = self._strip_protocol(src)
+        dst = self._strip_protocol(dst)
+        os.symlink(src, dst, **kwargs)
+
+    def islink(self, path) -> bool:
+        return os.path.islink(self._strip_protocol(path))
+
     def rm_file(self, path):
         os.remove(path)
 
     def rm(self, path, recursive=False, maxdepth=None):
-        if isinstance(path, str):
+        if not isinstance(path, list):
             path = [path]
 
         for p in path:
@@ -216,6 +233,8 @@ def make_path_posix(path, sep=os.sep):
         # most common fast case for posix
         if path.startswith("/"):
             return path
+        if path.startswith("./"):
+            path = path[2:]
         return os.getcwd() + "/" + path
     if (
         (sep not in path and "/" not in path)
@@ -350,6 +369,9 @@ class LocalFileOpener(io.IOBase):
 
     def fileno(self):
         return self.raw.fileno()
+
+    def flush(self) -> None:
+        self.f.flush()
 
     def __iter__(self):
         return self.f.__iter__()

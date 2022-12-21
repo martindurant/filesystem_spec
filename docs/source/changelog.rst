@@ -1,6 +1,62 @@
 Changelog
 =========
 
+2022.11.0
+---------
+
+Enhancements
+
+- Speed up FSMap._key_to_str (#1101)
+- Add modified/created to Memory and Arrow (#1096)
+- Clear expired cache method (#1092)
+- Allow seekable arrow file (#1091)
+- Allow append for arrow (#1089)
+- recursive for sftp.get (#1082)
+- topdown arg to walk() (#1081)
+
+Fixes
+
+- fix doc warnings (#1106, #1084)
+- Fix HDFS _strip_protocol (#1103)
+- Allow URLs with protocol for HDFS (#1099)
+- yarl in doc deps (#1095)
+- missing await in genericFS.cp (#1094)
+- explicit IPv4 for test HTTP server (#1088)
+- sort when merging ranges for referenceFS (#1087)
+
+Other
+
+- Check that snappy is snappy (#1079)
+
+2022.10.0
+---------
+
+Enhancements
+
+- referenceFS consolidates reads in the same remote file (#1063)
+- localfs: add link/symlink/islink (#1059)
+- asyncfs: make mirroring methods optional (#1054)
+- local: info: provide st_ino and st_nlink from stat (#1053)
+- arrow_hdfs replaces hdfs (#1051)
+- Add read/write_text (#1047)
+- Add pipe/cat to genericFS (#1038)
+
+Fixes
+
+- SSH write doesn't return number of bytes (#1072)
+- wrap flush method for LocalFileOpened (#1070)
+- localfs: fix support for pathlib/os.PathLike objects in rm (#1058)
+- don't get_file remote FTP directory (#1056)
+- fix zip write to remote (#1046)
+- fix zip del following failed init (#1040)
+
+Other
+
+- add asynclocalfs to the registry (#1060)
+- add DVCFileSystem to the registry (#1049)
+- add downstream tests (#1037)
+- Don't auto-close OpenFiles (#1035)
+
 2022.8.2
 --------
 
@@ -189,7 +245,7 @@ Other
 
 Fixes
 
-- Removed inaccurate `ZipFileSystem.cat()` override so that the base
+- Removed inaccurate ``ZipFileSystem.cat()`` override so that the base
   class' version is used (#789)
 - fix entrypoint processing (#784)
 - case where no blocks of a block-cache have yet been loaded (#801)
@@ -446,7 +502,7 @@ Version 0.8.3
 Features:
 
 - error options for cat
-- memory fs created time in detailed `ls`
+- memory fs created time in detailed ``ls```
 
 
 Fixes:
@@ -575,7 +631,7 @@ Version 0.6.0
   file reads in blocks (:pr:`191`).
 * Fixed equality checks for file system instance to return ``False`` when compared to objects
   other than file systems (:pr:`192`)
-* Fixed a bug in :meth:`fsspec.FSMap.keys` returning a generator, which was consumed upon iteration (:pr:`189`).
+* Fixed a bug in ``fsspec.FSMap.keys`` returning a generator, which was consumed upon iteration (:pr:`189`).
 * Removed the magic addition of aliases in ``AbstractFileSystem.__init__``. Now alias methods are always
   present (:pr:`177`)
 * Deprecated passing ``trim`` to :class:`fsspec.spec.AbstractBufferedFile`. Pass it in ``storage_options`` instead (:pr:`188`)

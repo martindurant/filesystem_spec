@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 import requests
+import yarl
 
 from fsspec.asyn import AbstractAsyncStreamedFile, AsyncFileSystem, sync, sync_wrapper
 from fsspec.callbacks import _DEFAULT_CALLBACK
@@ -53,6 +54,7 @@ class HTTPFileSystem(AsyncFileSystem):
         loop=None,
         client_kwargs=None,
         get_client=get_client,
+        encoded=False,
         **storage_options,
     ):
         """
@@ -90,6 +92,7 @@ class HTTPFileSystem(AsyncFileSystem):
         self.cache_options = cache_options
         self.client_kwargs = client_kwargs or {}
         self.get_client = get_client
+        self.encoded = encoded
         self.kwargs = storage_options
         self._session = None
 
@@ -103,6 +106,13 @@ class HTTPFileSystem(AsyncFileSystem):
         request_options.pop("max_paths", None)
         request_options.pop("skip_instance_cache", None)
         self.kwargs = request_options
+
+    @property
+    def fsid(self):
+        return "http"
+
+    def encode_url(self, url):
+        return yarl.URL(url, encoded=self.encoded)
 
     @staticmethod
     def close_session(loop, session):
@@ -143,7 +153,7 @@ class HTTPFileSystem(AsyncFileSystem):
         kw.update(kwargs)
         logger.debug(url)
         session = await self.set_session()
-        async with session.get(url, **self.kwargs) as r:
+        async with session.get(self.encode_url(url), **self.kwargs) as r:
             self._raise_not_found_for_status(r, url)
             text = await r.text()
         if self.simple_links:
@@ -217,7 +227,7 @@ class HTTPFileSystem(AsyncFileSystem):
             headers["Range"] = await self._process_limits(url, start, end)
             kw["headers"] = headers
         session = await self.set_session()
-        async with session.get(url, **kw) as r:
+        async with session.get(self.encode_url(url), **kw) as r:
             out = await r.read()
             self._raise_not_found_for_status(r, url)
         return out
@@ -229,7 +239,7 @@ class HTTPFileSystem(AsyncFileSystem):
         kw.update(kwargs)
         logger.debug(rpath)
         session = await self.set_session()
-        async with session.get(rpath, **self.kwargs) as r:
+        async with session.get(self.encode_url(rpath), **self.kwargs) as r:
             try:
                 size = int(r.headers["content-length"])
             except (ValueError, KeyError):
@@ -297,7 +307,7 @@ class HTTPFileSystem(AsyncFileSystem):
         try:
             logger.debug(path)
             session = await self.set_session()
-            r = await session.get(path, **kw)
+            r = await session.get(self.encode_url(path), **kw)
             async with r:
                 return r.status < 400
         except (requests.HTTPError, aiohttp.ClientError):
@@ -354,7 +364,12 @@ class HTTPFileSystem(AsyncFileSystem):
             )
         else:
             return HTTPStreamFile(
-                self, path, mode=mode, loop=self.loop, session=session, **kw
+                self,
+                path,
+                mode=mode,
+                loop=self.loop,
+                session=session,
+                **kw,
             )
 
     async def open_async(self, path, mode="rb", size=None, **kwargs):
@@ -365,7 +380,12 @@ class HTTPFileSystem(AsyncFileSystem):
             except FileNotFoundError:
                 pass
         return AsyncStreamFile(
-            self, path, loop=self.loop, session=session, size=size, **kwargs
+            self,
+            path,
+            loop=self.loop,
+            session=session,
+            size=size,
+            **kwargs,
         )
 
     def ukey(self, url):
@@ -389,7 +409,7 @@ class HTTPFileSystem(AsyncFileSystem):
             try:
                 info.update(
                     await _file_info(
-                        url,
+                        self.encode_url(url),
                         size_policy=policy,
                         session=session,
                         **self.kwargs,
@@ -581,7 +601,7 @@ class HTTPFile(AbstractBufferedFile):
         """
         logger.debug(f"Fetch all for {self}")
         if not isinstance(self.cache, AllBytes):
-            r = await self.session.get(self.url, **self.kwargs)
+            r = await self.session.get(self.fs.encode_url(self.url), **self.kwargs)
             async with r:
                 r.raise_for_status()
                 out = await r.read()
@@ -604,8 +624,10 @@ class HTTPFile(AbstractBufferedFile):
         kwargs = self.kwargs.copy()
         headers = kwargs.pop("headers", {}).copy()
         headers["Range"] = "bytes=%i-%i" % (start, end - 1)
-        logger.debug(self.url + " : " + headers["Range"])
-        r = await self.session.get(self.url, headers=headers, **kwargs)
+        logger.debug(str(self.url) + " : " + headers["Range"])
+        r = await self.session.get(
+            self.fs.encode_url(self.url), headers=headers, **kwargs
+        )
         async with r:
             if r.status == 416:
                 # range request outside file
@@ -674,7 +696,7 @@ class HTTPStreamFile(AbstractBufferedFile):
         super().__init__(fs=fs, path=url, mode=mode, cache_type="none", **kwargs)
 
         async def cor():
-            r = await self.session.get(url, **kwargs).__aenter__()
+            r = await self.session.get(self.fs.encode_url(url), **kwargs).__aenter__()
             self.fs._raise_not_found_for_status(r, url)
             return r
 
@@ -717,7 +739,9 @@ class AsyncStreamFile(AbstractAsyncStreamedFile):
 
     async def read(self, num=-1):
         if self.r is None:
-            r = await self.session.get(self.url, **self.kwargs).__aenter__()
+            r = await self.session.get(
+                self.fs.encode_url(self.url), **self.kwargs
+            ).__aenter__()
             self.fs._raise_not_found_for_status(r, self.url)
             self.r = r
         out = await self.r.content.read(num)

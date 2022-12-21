@@ -103,8 +103,29 @@ def test_du(m):
         }
     )
     assert fs.du("/dir") == 6
-    assert fs.du("/dir", total=False)["/dir/dirb/afile"] == 2
+    assert fs.du("/dir", total=False) == {
+        "/dir/afile": 1,
+        "/dir/dirb/afile": 2,
+        "/dir/dirb/bfile": 3,
+    }
+    assert fs.du("/dir", withdirs=True) == 6
+    assert fs.du("/dir", total=False, withdirs=True) == {
+        "/dir": 0,
+        "/dir/afile": 1,
+        "/dir/dirb": 0,
+        "/dir/dirb/afile": 2,
+        "/dir/dirb/bfile": 3,
+    }
     assert fs.du("/dir", maxdepth=0) == 1
+    assert fs.du("/dir", total=False, withdirs=True, maxdepth=1) == {
+        "/dir": 0,
+        "/dir/afile": 1,
+        "/dir/dirb": 0,
+    }
+
+    # Size of file only.
+    assert fs.du("/dir/afile") == 1
+    assert fs.du("/dir/afile", withdirs=True) == 1
 
 
 def test_head_tail(m):
@@ -169,6 +190,17 @@ def test_open_text(m):
         f.write(b"some\n" b"lines\n" b"of\n" b"text")
     f = fs.open("/myfile", "r", encoding="latin1")
     assert f.encoding == "latin1"
+
+
+def test_read_text(m):
+    with m.open("/myfile", "w", encoding="utf-8") as f:
+        f.write("some\nlines\nof\ntext")
+    assert m.read_text("/myfile", encoding="utf-8") == "some\nlines\nof\ntext"
+
+
+def test_write_text(m):
+    m.write_text("/myfile", "some\nlines\nof\ntext", encoding="utf-8")
+    assert m.read_text("/myfile", encoding="utf-8") == "some\nlines\nof\ntext"
 
 
 def test_chained_fs():

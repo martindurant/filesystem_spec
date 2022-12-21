@@ -480,6 +480,8 @@ def test_make_path_posix():
         )
     assert "/" in make_path_posix("rel\\path")
 
+    assert "." not in make_path_posix("./path")
+
 
 def test_linked_files(tmpdir):
     tmpdir = str(tmpdir)
@@ -785,3 +787,78 @@ def test_numpy_fromfile(tmpdir):
     arr = np.arange(10, dtype=dt)
     arr.tofile(fn)
     assert np.array_equal(np.fromfile(fn, dtype=dt), arr)
+
+
+def test_link(tmpdir):
+    target = os.path.join(tmpdir, "target")
+    link = os.path.join(tmpdir, "link")
+
+    fs = LocalFileSystem()
+    fs.touch(target)
+
+    fs.link(target, link)
+    assert fs.info(link)["nlink"] > 1
+
+
+def test_symlink(tmpdir):
+    target = os.path.join(tmpdir, "target")
+    link = os.path.join(tmpdir, "link")
+
+    fs = LocalFileSystem()
+    fs.touch(target)
+
+    fs.symlink(target, link)
+    assert fs.islink(link)
+
+
+# https://github.com/fsspec/filesystem_spec/issues/967
+def test_put_file_to_dir(tmpdir):
+    src_file = os.path.join(str(tmpdir), "src")
+    target_dir = os.path.join(str(tmpdir), "target")
+    target_file = os.path.join(target_dir, "src")
+
+    fs = LocalFileSystem()
+    fs.touch(src_file)
+    fs.mkdir(target_dir)
+    fs.put(src_file, target_dir)
+
+    assert fs.isfile(target_file)
+
+
+def test_du(tmpdir):
+    file = tmpdir / "file"
+    subdir = tmpdir / "subdir"
+    subfile = subdir / "subfile"
+
+    fs = LocalFileSystem()
+    with open(file, "wb") as f:
+        f.write(b"4444")
+    fs.mkdir(subdir)
+    with open(subfile, "wb") as f:
+        f.write(b"7777777")
+
+    # Switch to posix paths for comparisons
+    tmpdir_posix = Path(tmpdir).as_posix()
+    file_posix = Path(file).as_posix()
+    subdir_posix = Path(subdir).as_posix()
+    subfile_posix = Path(subfile).as_posix()
+
+    assert fs.du(tmpdir) == 11
+    assert fs.du(tmpdir, total=False) == {file_posix: 4, subfile_posix: 7}
+    # Note directory size is OS-specific, but must be >= 0
+    assert fs.du(tmpdir, withdirs=True) >= 11
+
+    d = fs.du(tmpdir, total=False, withdirs=True)
+    assert len(d) == 4
+    assert d[file_posix] == 4
+    assert d[subfile_posix] == 7
+    assert d[tmpdir_posix] >= 0
+    assert d[subdir_posix] >= 0
+
+    assert fs.du(tmpdir, maxdepth=2) == 11
+    assert fs.du(tmpdir, maxdepth=1) == 4
+    assert fs.du(tmpdir, maxdepth=0) == 4
+
+    # Size of file only.
+    assert fs.du(file) == 4
+    assert fs.du(file, withdirs=True) == 4

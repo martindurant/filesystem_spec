@@ -1,10 +1,11 @@
 import json
+import os
 
 import pytest
 
 import fsspec
 from fsspec.implementations.local import LocalFileSystem
-from fsspec.implementations.reference import _unmodel_hdf5
+from fsspec.implementations.reference import ReferenceNotReachable, _unmodel_hdf5
 from fsspec.tests.conftest import data, realfile, reset_files, server, win  # noqa: F401
 
 
@@ -23,6 +24,8 @@ def test_simple(server):  # noqa: F811
     assert fs.cat("b") == data[:5]
     assert fs.cat("c") == data[1 : 1 + 5]
     assert fs.cat("d") == b"hello"
+    with fs.open("d", "rt") as f:
+        assert f.read(2) == "he"
 
 
 def test_ls(server):  # noqa: F811
@@ -34,6 +37,9 @@ def test_ls(server):  # noqa: F811
     assert {"name": "c", "type": "directory", "size": 0} in fs.ls("", detail=True)
     assert fs.find("") == ["a", "b", "c/d"]
     assert fs.find("", withdirs=True) == ["a", "b", "c", "c/d"]
+    assert fs.find("c", detail=True) == {
+        "c/d": {"name": "c/d", "size": 6, "type": "file"}
+    }
 
 
 def test_info(server):  # noqa: F811
@@ -75,10 +81,49 @@ def test_mutable(server, m):
     assert fs.cat("aa") == bin_data
 
 
+def test_put_get(tmpdir):
+    d1 = f"{tmpdir}/d1"
+    os.mkdir(d1)
+    with open(f"{d1}/a", "wb") as f:
+        f.write(b"1")
+    with open(f"{d1}/b", "wb") as f:
+        f.write(b"2")
+    d2 = f"{tmpdir}/d2"
+
+    fs = fsspec.filesystem("reference", fo={}, remote_protocol="file")
+    fs.put(d1, "out", recursive=True)
+
+    fs.get("out", d2, recursive=True)
+    assert open(f"{d2}/a", "rb").read() == b"1"
+    assert open(f"{d2}/b", "rb").read() == b"2"
+
+
+def test_put_get_single(tmpdir):
+    d1 = f"{tmpdir}/f1"
+    d2 = f"{tmpdir}/f2"
+    with open(d1, "wb") as f:
+        f.write(b"1")
+
+    # skip instance cache since this is the same kwargs as previous test
+    fs = fsspec.filesystem(
+        "reference", fo={}, remote_protocol="file", skip_instance_cache=True
+    )
+    fs.put_file(d1, "out")
+
+    fs.get_file("out", d2)
+    assert open(d2, "rb").read() == b"1"
+    fs.pipe({"hi": b"data"})
+    assert fs.cat("hi") == b"data"
+
+
 def test_defaults(server):  # noqa: F811
     refs = {"a": b"data", "b": (None, 0, 5)}
     fs = fsspec.filesystem(
-        "reference", fo=refs, target_protocol="http", target=realfile
+        "reference",
+        fo=refs,
+        target_protocol="http",
+        target=realfile,
+        remote_protocol="http",
     )
 
     assert fs.cat("a") == b"data"
@@ -192,6 +237,29 @@ def test_spec1_expand():
         "gen_key5": ["http://server.domain/path_5"],
         "gen_key6": ["http://server.domain/path_6"],
     }
+
+
+def test_spec1_expand_simple():
+    pytest.importorskip("jinja2")
+    in_data = {
+        "version": 1,
+        "templates": {"u": "server.domain/path"},
+        "refs": {
+            "key0": "base64:ZGF0YQ==",
+            "key2": ["http://{{u}}", 10000, 100],
+            "key4": ["http://target_url"],
+        },
+    }
+    fs = fsspec.filesystem("reference", fo=in_data, target_protocol="http")
+    assert fs.references["key2"] == ["http://server.domain/path", 10000, 100]
+    fs = fsspec.filesystem(
+        "reference",
+        fo=in_data,
+        target_protocol="http",
+        template_overrides={"u": "not.org/p"},
+    )
+    assert fs.references["key2"] == ["http://not.org/p", 10000, 100]
+    assert fs.cat("key0") == b"data"
 
 
 def test_spec1_gen_variants():
@@ -337,3 +405,111 @@ def test_missing_nonasync(m):
 
     a = zarr.open_array(m)
     assert str(a[0]) == "nan"
+
+
+def test_fss_has_defaults(m):
+    fs = fsspec.filesystem("reference", fo={})
+    assert None in fs.fss
+
+    fs = fsspec.filesystem("reference", fo={}, remote_protocol="memory")
+    assert fs.fss[None].protocol == "memory"
+    assert fs.fss["memory"].protocol == "memory"
+
+    fs = fsspec.filesystem("reference", fs=m, fo={})
+    assert fs.fss[None] is m
+
+    fs = fsspec.filesystem("reference", fs={"memory": m}, fo={})
+    assert fs.fss["memory"] is m
+    assert fs.fss[None].protocol == "file"
+
+    fs = fsspec.filesystem("reference", fs={None: m}, fo={})
+    assert fs.fss[None] is m
+
+    fs = fsspec.filesystem("reference", fo={"key": ["memory://a"]})
+    assert fs.fss[None] is fs.fss["memory"]
+
+    fs = fsspec.filesystem("reference", fo={"key": ["memory://a"], "blah": ["path"]})
+    assert fs.fss[None] is fs.fss["memory"]
+
+
+def test_merging(m):
+    m.pipe("/a", b"test data")
+    other = b"other test data"
+    m.pipe("/b", other)
+    fs = fsspec.filesystem(
+        "reference",
+        fo={
+            "a": ["memory://a", 1, 1],
+            "b": ["memory://a", 2, 1],
+            "c": ["memory://b"],
+            "d": ["memory://b", 4, 6],
+        },
+    )
+    out = fs.cat(["a", "b", "c", "d"])
+    assert out == {"a": b"e", "b": b"s", "c": other, "d": other[4:10]}
+
+
+def test_cat_file_ranges(m):
+    other = b"other test data"
+    m.pipe("/b", other)
+    fs = fsspec.filesystem(
+        "reference",
+        fo={
+            "c": ["memory://b"],
+            "d": ["memory://b", 4, 6],
+        },
+    )
+    assert fs.cat_file("c") == other
+    assert fs.cat_file("c", start=1) == other[1:]
+    assert fs.cat_file("c", start=-5) == other[-5:]
+    assert fs.cat_file("c", 1, -5) == other[1:-5]
+
+    assert fs.cat_file("d") == other[4:10]
+    assert fs.cat_file("d", start=1) == other[4:10][1:]
+    assert fs.cat_file("d", start=-5) == other[4:10][-5:]
+    assert fs.cat_file("d", 1, -3) == other[4:10][1:-3]
+
+
+def test_cat_missing(m):
+    other = b"other test data"
+    m.pipe("/b", other)
+    fs = fsspec.filesystem(
+        "reference",
+        fo={
+            "c": ["memory://b"],
+            "d": ["memory://unknown", 4, 6],
+        },
+    )
+    with pytest.raises(FileNotFoundError):
+        fs.cat("notafile")
+
+    with pytest.raises(FileNotFoundError):
+        fs.cat(["notone", "nottwo"])
+
+    mapper = fs.get_mapper("")
+
+    with pytest.raises(KeyError):
+        mapper["notakey"]
+
+    with pytest.raises(KeyError):
+        mapper.getitems(["notone", "nottwo"])
+
+    with pytest.raises(ReferenceNotReachable) as ex:
+        fs.cat("d")
+    assert ex.value.__cause__
+    out = fs.cat("d", on_error="return")
+    assert isinstance(out, ReferenceNotReachable)
+
+    with pytest.raises(ReferenceNotReachable) as e:
+        mapper["d"]
+    assert '"d"' in str(e.value)
+    assert "//unknown" in str(e.value)
+
+    with pytest.raises(ReferenceNotReachable):
+        mapper.getitems(["c", "d"])
+
+    out = mapper.getitems(["c", "d"], on_error="return")
+    assert isinstance(out["d"], ReferenceNotReachable)
+
+    out = mapper.getitems(["c", "d"], on_error="omit")
+    assert list(out) == ["c"]

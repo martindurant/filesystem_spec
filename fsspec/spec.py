@@ -78,7 +78,7 @@ class _Cached(type):
             obj._fs_token_ = token
             obj.storage_args = args
             obj.storage_options = kwargs
-            if obj.async_impl:
+            if obj.async_impl and obj.mirror_sync_methods:
                 from .asyn import mirror_sync_methods
 
                 mirror_sync_methods(obj)
@@ -104,6 +104,7 @@ class AbstractFileSystem(metaclass=_Cached):
     protocol = "abstract"
     _latest = None
     async_impl = False
+    mirror_sync_methods = False
     root_marker = ""  # For some FSs, may require leading '/' or other character
 
     #: Extra *class attributes* that should be considered when hashing.
@@ -149,6 +150,13 @@ class AbstractFileSystem(metaclass=_Cached):
             warnings.warn("add_aliases has been removed.", FutureWarning)
         # This is set in _Cached
         self._fs_token_ = None
+
+    @property
+    def fsid(self):
+        """Persistent filesystem id that can be used to compare filesystems
+        across sessions.
+        """
+        raise NotImplementedError
 
     @property
     def _fs_token(self):
@@ -314,7 +322,7 @@ class AbstractFileSystem(metaclass=_Cached):
         - type of entry, "file", "directory" or other
 
         Additional information
-        may be present, aproriate to the file-system, e.g., generation,
+        may be present, appropriate to the file-system, e.g., generation,
         checksum, etc.
 
         May use refresh=True|False to allow use of self._ls_from_cache to
@@ -341,7 +349,7 @@ class AbstractFileSystem(metaclass=_Cached):
     def _ls_from_cache(self, path):
         """Check cache for listing
 
-        Returns listing, if found (may me empty list for a directly that exists
+        Returns listing, if found (may be empty list for a directly that exists
         but contains nothing), None if not in cache.
         """
         parent = self._parent(path)
@@ -361,7 +369,7 @@ class AbstractFileSystem(metaclass=_Cached):
         except KeyError:
             pass
 
-    def walk(self, path, maxdepth=None, **kwargs):
+    def walk(self, path, maxdepth=None, topdown=True, **kwargs):
         """Return all files belows path
 
         List all files, recursing into subdirectories; output is iterator-style,
@@ -377,6 +385,9 @@ class AbstractFileSystem(metaclass=_Cached):
         maxdepth: int
             Maximum recursion depth. None means limitless, but not recommended
             on link-based file-systems.
+        topdown: bool (True)
+            Whether to walk the directory tree from the top downwards or from
+            the bottom upwards.
         kwargs: passed to ``ls``
         """
         path = self._strip_protocol(path)
@@ -407,10 +418,13 @@ class AbstractFileSystem(metaclass=_Cached):
             else:
                 files[name] = info
 
-        if detail:
+        if not detail:
+            dirs = list(dirs)
+            files = list(files)
+
+        if topdown:
+            # Yield before recursion if walking top down
             yield path, dirs, files
-        else:
-            yield path, list(dirs), list(files)
 
         if maxdepth is not None:
             maxdepth -= 1
@@ -418,7 +432,13 @@ class AbstractFileSystem(metaclass=_Cached):
                 return
 
         for d in full_dirs:
-            yield from self.walk(d, maxdepth=maxdepth, detail=detail, **kwargs)
+            yield from self.walk(
+                d, maxdepth=maxdepth, detail=detail, topdown=topdown, **kwargs
+            )
+
+        if not topdown:
+            # Yield after recursion if walking bottom up
+            yield path, dirs, files
 
     def find(self, path, maxdepth=None, withdirs=False, detail=False, **kwargs):
         """List all files below path.
@@ -452,25 +472,33 @@ class AbstractFileSystem(metaclass=_Cached):
         else:
             return {name: out[name] for name in names}
 
-    def du(self, path, total=True, maxdepth=None, **kwargs):
-        """Space used by files within a path
+    def du(self, path, total=True, maxdepth=None, withdirs=False, **kwargs):
+        """Space used by files and optionally directories within a path
+
+        Directory size does not include the size of its contents.
 
         Parameters
         ----------
         path: str
         total: bool
-            whether to sum all the file sizes
+            Whether to sum all the file sizes
         maxdepth: int or None
-            maximum number of directory levels to descend, None for unlimited.
-        kwargs: passed to ``ls``
+            Maximum number of directory levels to descend, None for unlimited.
+        withdirs: bool
+            Whether to include directory paths in the output.
+        kwargs: passed to ``find``
 
         Returns
         -------
-        Dict of {fn: size} if total=False, or int otherwise, where numbers
+        Dict of {path: size} if total=False, or int otherwise, where numbers
         refer to bytes used.
         """
         sizes = {}
-        for f in self.find(path, maxdepth=maxdepth, **kwargs):
+        if withdirs and self.isdir(path):
+            # Include top-level directory in output
+            info = self.info(path)
+            sizes[info["name"]] = info["size"]
+        for f in self.find(path, maxdepth=maxdepth, withdirs=withdirs, **kwargs):
             info = self.info(f)
             sizes[info["name"]] = info["size"]
         if total:
@@ -649,6 +677,50 @@ class AbstractFileSystem(metaclass=_Cached):
         except:  # noqa: E722
             return False
 
+    def read_text(self, path, encoding=None, errors=None, newline=None, **kwargs):
+        """Get the contents of the file as a string.
+
+        Parameters
+        ----------
+        path: str
+            URL of file on this filesystems
+        encoding, errors, newline: same as `open`.
+        """
+        with self.open(
+            path,
+            mode="r",
+            encoding=encoding,
+            errors=errors,
+            newline=newline,
+            **kwargs,
+        ) as f:
+            return f.read()
+
+    def write_text(
+        self, path, value, encoding=None, errors=None, newline=None, **kwargs
+    ):
+        """Write the text to the given file.
+
+        An existing file will be overwritten.
+
+        Parameters
+        ----------
+        path: str
+            URL of file on this filesystems
+        value: str
+            Text to write.
+        encoding, errors, newline: same as `open`.
+        """
+        with self.open(
+            path,
+            mode="w",
+            encoding=encoding,
+            errors=errors,
+            newline=newline,
+            **kwargs,
+        ) as f:
+            return f.write(value)
+
     def cat_file(self, path, start=None, end=None, **kwargs):
         """Get the content of a file
 
@@ -701,7 +773,9 @@ class AbstractFileSystem(metaclass=_Cached):
         else:
             raise ValueError("path must be str or dict")
 
-    def cat_ranges(self, paths, starts, ends, max_gap=None, **kwargs):
+    def cat_ranges(
+        self, paths, starts, ends, max_gap=None, on_error="return", **kwargs
+    ):
         if max_gap is not None:
             raise NotImplementedError
         if not isinstance(paths, list):
@@ -712,7 +786,16 @@ class AbstractFileSystem(metaclass=_Cached):
             ends = [starts] * len(paths)
         if len(starts) != len(paths) or len(ends) != len(paths):
             raise ValueError
-        return [self.cat_file(p, s, e) for p, s, e in zip(paths, starts, ends)]
+        out = []
+        for p, s, e in zip(paths, starts, ends):
+            try:
+                out.append(self.cat_file(p, s, e))
+            except Exception as e:
+                if on_error == "return":
+                    out.append(e)
+                else:
+                    raise
+        return out
 
     def cat(self, path, recursive=False, on_error="raise", **kwargs):
         """Fetch (potentially multiple) paths' contents
@@ -774,6 +857,8 @@ class AbstractFileSystem(metaclass=_Cached):
             while data:
                 data = f1.read(self.blocksize)
                 segment_len = outfile.write(data)
+                if segment_len is None:
+                    segment_len = len(data)
                 callback.relative_update(segment_len)
         if not isfilelike(lpath):
             outfile.close()
@@ -816,6 +901,8 @@ class AbstractFileSystem(metaclass=_Cached):
                 while f1.tell() < size:
                     data = f1.read(self.blocksize)
                     segment_len = f2.write(data)
+                    if segment_len is None:
+                        segment_len = len(data)
                     callback.relative_update(segment_len)
 
     def put(self, lpath, rpath, recursive=False, callback=_DEFAULT_CALLBACK, **kwargs):
@@ -838,8 +925,12 @@ class AbstractFileSystem(metaclass=_Cached):
             lpath = make_path_posix(lpath)
         fs = LocalFileSystem()
         lpaths = fs.expand_path(lpath, recursive=recursive)
+        isdir = isinstance(rpath, str) and self.isdir(rpath)
         rpaths = other_paths(
-            lpaths, rpath, exists=isinstance(rpath, str) and self.isdir(rpath)
+            lpaths,
+            rpath,
+            exists=isdir,
+            is_dir=isdir and len(lpaths) == 1,
         )
 
         callback.set_size(len(rpaths))
@@ -1107,7 +1198,7 @@ class AbstractFileSystem(metaclass=_Cached):
 
         See Also
         --------
-        utils.read_block
+        :func:`fsspec.utils.read_block`
         """
         with self.open(fn, "rb") as f:
             size = f.size
@@ -1219,6 +1310,14 @@ class AbstractFileSystem(metaclass=_Cached):
 
     # ------------------------------------------------------------------------
     # Aliases
+
+    def read_bytes(self, path, start=None, end=None, **kwargs):
+        """Alias of `AbstractFileSystem.cat_file`."""
+        return self.cat_file(path, start=start, end=end, **kwargs)
+
+    def write_bytes(self, path, value, **kwargs):
+        """Alias of `AbstractFileSystem.pipe_file`."""
+        self.pipe_file(path, value, **kwargs)
 
     def makedir(self, path, create_parents=True, **kwargs):
         """Alias of `AbstractFileSystem.mkdir`."""
