@@ -848,25 +848,26 @@ class AbstractFileSystem(metaclass=_Cached):
         """Copy single remote file to local"""
         if isfilelike(lpath):
             outfile = lpath
-        else:
-            if self.isdir(rpath):
-                os.makedirs(lpath, exist_ok=True)
-                return None
+        elif self.isdir(rpath):
+            os.makedirs(lpath, exist_ok=True)
+            return None
 
+        with self.open(rpath, "rb", **kwargs) as f1:
             if outfile is None:
                 outfile = open(lpath, "wb")
 
-        with self.open(rpath, "rb", **kwargs) as f1:
-            callback.set_size(getattr(f1, "size", None))
-            data = True
-            while data:
-                data = f1.read(self.blocksize)
-                segment_len = outfile.write(data)
-                if segment_len is None:
-                    segment_len = len(data)
-                callback.relative_update(segment_len)
-        if not isfilelike(lpath):
-            outfile.close()
+            try:
+                callback.set_size(getattr(f1, "size", None))
+                data = True
+                while data:
+                    data = f1.read(self.blocksize)
+                    segment_len = outfile.write(data)
+                    if segment_len is None:
+                        segment_len = len(data)
+                    callback.relative_update(segment_len)
+            finally:
+                if not isfilelike(lpath):
+                    outfile.close()
 
     def get(self, rpath, lpath, recursive=False, callback=_DEFAULT_CALLBACK, **kwargs):
         """Copy file(s) to local.
@@ -883,7 +884,9 @@ class AbstractFileSystem(metaclass=_Cached):
         if isinstance(lpath, str):
             lpath = make_path_posix(lpath)
         rpaths = self.expand_path(rpath, recursive=recursive)
-        isdir = isinstance(lpath, str) and LocalFileSystem().isdir(lpath)
+        isdir = isinstance(lpath, str) and (
+            lpath.endswith("/") or LocalFileSystem().isdir(lpath)
+        )
         lpaths = other_paths(
             rpaths,
             lpath,
@@ -936,7 +939,7 @@ class AbstractFileSystem(metaclass=_Cached):
             lpath = make_path_posix(lpath)
         fs = LocalFileSystem()
         lpaths = fs.expand_path(lpath, recursive=recursive)
-        isdir = isinstance(rpath, str) and self.isdir(rpath)
+        isdir = isinstance(rpath, str) and (rpath.endswith("/") or self.isdir(rpath))
         rpaths = other_paths(
             lpaths,
             rpath,
@@ -977,7 +980,7 @@ class AbstractFileSystem(metaclass=_Cached):
             on_error = "raise"
 
         paths = self.expand_path(path1, recursive=recursive)
-        isdir = isinstance(path2, str) and self.isdir(path2)
+        isdir = isinstance(path2, str) and (path2.endswith("/") or self.isdir(path2))
         path2 = other_paths(
             paths,
             path2,
