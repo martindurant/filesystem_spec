@@ -7,12 +7,7 @@ from contextlib import suppress
 from functools import cached_property, wraps
 
 from fsspec.spec import AbstractFileSystem
-from fsspec.utils import (
-    get_package_version_without_import,
-    infer_storage_options,
-    mirror_from,
-    tokenize,
-)
+from fsspec.utils import infer_storage_options, mirror_from, tokenize
 
 
 def wrap_exceptions(func):
@@ -33,9 +28,6 @@ def wrap_exceptions(func):
     return wrapper
 
 
-PYARROW_VERSION = None
-
-
 class ArrowFSWrapper(AbstractFileSystem):
     """FSSpec-compatible wrapper of pyarrow.fs.FileSystem.
 
@@ -48,9 +40,15 @@ class ArrowFSWrapper(AbstractFileSystem):
     root_marker = "/"
 
     def __init__(self, fs, **kwargs):
-        global PYARROW_VERSION
-        PYARROW_VERSION = get_package_version_without_import("pyarrow")
         self.fs = fs
+        override = {"local": "file"}
+        type_name = override.get(fs.type_name, fs.type_name)
+
+        try:
+            fs.from_uri(f"{type_name}:///")
+            self.root_marker = "/"
+        except BaseException:
+            self.root_marker = ""
         super().__init__(**kwargs)
 
     @property
@@ -75,8 +73,15 @@ class ArrowFSWrapper(AbstractFileSystem):
         wrapper = type(cls.__name__, (cls,), {"root_marker": root_marker})
         return wrapper(fs, **kwargs)
 
-    @classmethod
-    def _strip_protocol(cls, path):
+    def _parent(self, path):
+        path = self._strip_protocol(path)
+        if "/" in path:
+            parent = path.rsplit("/", 1)[0].lstrip(self.root_marker)
+            return self.root_marker + parent
+        else:
+            return self.root_marker
+
+    def _strip_protocol(self, path):
         ops = infer_storage_options(path)
         path = ops["path"]
         if path.startswith("//"):
@@ -185,10 +190,6 @@ class ArrowFSWrapper(AbstractFileSystem):
             raise ValueError(f"unsupported mode for Arrow filesystem: {mode!r}")
 
         _kwargs = {}
-        if mode != "rb" or not seekable:
-            if int(PYARROW_VERSION.split(".")[0]) >= 4:
-                # disable compression auto-detection
-                _kwargs["compression"] = None
         stream = method(path, **_kwargs)
 
         return ArrowFile(self, stream, path, mode, block_size, **kwargs)
